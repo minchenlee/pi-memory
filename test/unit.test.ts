@@ -76,17 +76,21 @@ function cleanupTmpDir() {
 function createMockPi() {
 	const tools: Record<string, any> = {};
 	const hooks: Record<string, (...args: unknown[]) => unknown> = {};
+	const commands: Record<string, { description: string; handler: (args: string, ctx: any) => Promise<unknown> }> = {};
 
 	const pi = {
 		registerTool(toolDef: any) {
 			tools[toolDef.name] = toolDef;
+		},
+		registerCommand(name: string, def: any) {
+			commands[name] = def;
 		},
 		on(event: string, handler: (...args: unknown[]) => unknown) {
 			hooks[event] = handler;
 		},
 	};
 
-	return { pi, tools, hooks };
+	return { pi, tools, hooks, commands };
 }
 
 /** Create a mock tool execution context. */
@@ -1351,18 +1355,25 @@ describe("memory_status tool", () => {
 
 describe("lifecycle hooks", () => {
 	let hooks: Record<string, (...args: unknown[]) => unknown>;
+	const prevSnapshotEnv = process.env.PI_MEMORY_SNAPSHOT;
 
 	beforeEach(() => {
 		setupTmpDir();
 		ensureDirs();
 		_setQmdAvailable(false);
 		_resetMemorySnapshot();
+		// These tests assert default (stable) injection behavior.
+		process.env.PI_MEMORY_SNAPSHOT = "stable";
 		const mockPi = createMockPi();
 		hooks = mockPi.hooks;
 		registerExtension(mockPi.pi as any);
 	});
 
-	afterEach(cleanupTmpDir);
+	afterEach(() => {
+		if (prevSnapshotEnv === undefined) delete process.env.PI_MEMORY_SNAPSHOT;
+		else process.env.PI_MEMORY_SNAPSHOT = prevSnapshotEnv;
+		cleanupTmpDir();
+	});
 
 	test("registers all expected hooks", () => {
 		expect(hooks.session_start).toBeDefined();
@@ -1814,6 +1825,7 @@ describe("lifecycle hooks", () => {
 
 describe("KV cache stability: memory snapshot", () => {
 	let hooks: Record<string, (...args: unknown[]) => unknown>;
+	let commands: Record<string, { description: string; handler: (args: string, ctx: any) => Promise<unknown> }>;
 	let tools: Record<string, any>;
 	const prevSnapshotEnv = process.env.PI_MEMORY_SNAPSHOT;
 	const prevNoSearchEnv = process.env.PI_MEMORY_NO_SEARCH;
@@ -1823,12 +1835,13 @@ describe("KV cache stability: memory snapshot", () => {
 		ensureDirs();
 		_setQmdAvailable(false);
 		_resetMemorySnapshot();
-		// Default to stable mode for these tests; per-turn test overrides locally.
-		delete process.env.PI_MEMORY_SNAPSHOT;
+		// Default to stable mode for these tests; per-turn/off tests override locally.
+		process.env.PI_MEMORY_SNAPSHOT = "stable";
 		// Avoid implicit search calls bleeding in.
 		process.env.PI_MEMORY_NO_SEARCH = "1";
 		const mockPi = createMockPi();
 		hooks = mockPi.hooks;
+		commands = mockPi.commands;
 		tools = mockPi.tools;
 		registerExtension(mockPi.pi as any);
 	});
@@ -1990,6 +2003,75 @@ describe("KV cache stability: memory snapshot", () => {
 				expect(result.systemPrompt).not.toContain("ALIAS_CONTENT_");
 			}
 		}
+	});
+
+	test("manual mode (default): no injection until /memory on, then stable-like injection", async () => {
+		process.env.PI_MEMORY_SNAPSHOT = "manual";
+		fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), "MANUAL_MODE_FACT", "utf-8");
+
+		// Default: no injection.
+		const result1 = await hooks.before_agent_start({ systemPrompt: "base" }, {});
+		expect(result1).toBeUndefined();
+
+		// /memory on enables injection for this session.
+		await commands.memory.handler("on", createMockCtx());
+		const result2 = await hooks.before_agent_start({ systemPrompt: "base" }, {});
+		expect(result2).toBeDefined();
+		expect(result2.systemPrompt).toContain("MANUAL_MODE_FACT");
+
+		// Stable behavior once enabled: byte-stable across turns.
+		fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), "CHANGED_AFTER_ENABLE", "utf-8");
+		const result3 = await hooks.before_agent_start({ systemPrompt: "base" }, {});
+		expect(result3.systemPrompt).toBe(result2.systemPrompt);
+		expect(result3.systemPrompt).not.toContain("CHANGED_AFTER_ENABLE");
+
+		// /memory off disables again.
+		await commands.memory.handler("off", createMockCtx());
+		const result4 = await hooks.before_agent_start({ systemPrompt: "base" }, {});
+		expect(result4).toBeUndefined();
+	});
+
+	test("manual mode: /memory with no args toggles", async () => {
+		process.env.PI_MEMORY_SNAPSHOT = "manual";
+		fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), "TOGGLE_FACT", "utf-8");
+
+		await commands.memory.handler("", createMockCtx()); // toggles on
+		const result = await hooks.before_agent_start({ systemPrompt: "base" }, {});
+		expect(result.systemPrompt).toContain("TOGGLE_FACT");
+
+		await commands.memory.handler("", createMockCtx()); // toggles off
+		const result2 = await hooks.before_agent_start({ systemPrompt: "base" }, {});
+		expect(result2).toBeUndefined();
+	});
+
+	test("manual mode: /memory is a no-op when env pins stable or off", async () => {
+		process.env.PI_MEMORY_SNAPSHOT = "stable";
+		fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), "PINNED_FACT", "utf-8");
+		const result1 = await hooks.before_agent_start({ systemPrompt: "base" }, {});
+		expect(result1.systemPrompt).toContain("PINNED_FACT");
+
+		await commands.memory.handler("off", createMockCtx()); // must NOT disable stable injection
+		const result2 = await hooks.before_agent_start({ systemPrompt: "base" }, {});
+		expect(result2.systemPrompt).toContain("PINNED_FACT");
+
+		process.env.PI_MEMORY_SNAPSHOT = "off";
+		await commands.memory.handler("on", createMockCtx()); // must NOT enable off-mode injection
+		const result3 = await hooks.before_agent_start({ systemPrompt: "base" }, {});
+		expect(result3).toBeUndefined();
+	});
+
+	test("manual mode: session_start resets the opt-in state", async () => {
+		process.env.PI_MEMORY_SNAPSHOT = "manual";
+		fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), "RESET_FACT", "utf-8");
+
+		await commands.memory.handler("on", createMockCtx());
+		expect(await hooks.before_agent_start({ systemPrompt: "base" }, {})).toBeDefined();
+
+		await hooks.session_start(
+			{},
+			{ hasUI: false, sessionManager: { getSessionId: () => "newsess1" }, ui: { notify: () => {} } },
+		);
+		expect(await hooks.before_agent_start({ systemPrompt: "base" }, {})).toBeUndefined();
 	});
 
 	test("session_start refreshes snapshot (resets module state across sessions)", async () => {

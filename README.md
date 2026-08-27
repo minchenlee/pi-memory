@@ -149,6 +149,20 @@ When `PI_MEMORY_SNAPSHOT=per-turn` is set and qmd is available, the extension au
 
 The search has a 3-second timeout and fails silently. In the default `stable` mode, the model gets the same capability by calling `memory_search` on demand.
 
+### Manual mode (default): opt-in injection via `/memory`
+
+By default (`PI_MEMORY_SNAPSHOT=manual`) the extension injects **nothing** into the system prompt. Memory tools (`memory_read`, `memory_search`, `memory_write`, `memory_forget`, `memory_status`) remain fully available — the model can consult and update memory on demand, but every session starts with a clean context.
+
+When you *do* want ambient memory for the current session, run:
+
+- `/memory on` — enable injection from the next turn (stable snapshot behavior, KV-cache friendly)
+- `/memory off` — disable it again
+- `/memory` — toggle
+
+The opt-in is session-scoped: a new session starts clean until you opt in again. In `manual` mode the command only controls the current session; if `PI_MEMORY_SNAPSHOT` is pinned to `stable`/`per-turn` (always on) or `off` (always off), `/memory` reports that and is a no-op.
+
+To restore the old always-on default, set `PI_MEMORY_SNAPSHOT=stable`.
+
 ### Tags and links
 
 Use `#tags` and `[[wiki-links]]` in memory content to improve searchability:
@@ -192,7 +206,7 @@ This ensures in-progress context survives compaction and is visible in the next 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
 | `PI_MEMORY_DIR` | path | `~/.pi/agent/memory` | Override the memory storage directory |
-| `PI_MEMORY_SNAPSHOT` | `stable`, `per-turn`, `off` | `stable` | `stable` snapshots memory at checkpoints for KV cache stability; `per-turn` rebuilds every turn (legacy behavior); `off` disables ambient injection entirely (tools still work on demand) |
+| `PI_MEMORY_SNAPSHOT` | `manual`, `stable`, `per-turn`, `off` | `manual` | `manual` (default) injects nothing until you run `/memory on`; `stable` snapshots memory at checkpoints for KV cache stability; `per-turn` rebuilds every turn (legacy behavior); `off` disables ambient injection entirely (tools still work on demand) |
 | `PI_MEMORY_QMD_UPDATE` | `background`, `manual`, `off` | `background` | Controls automatic `qmd update` + `qmd embed` after writes |
 | `PI_MEMORY_QMD_SEARCH_TIMEOUT_MS` | positive integer (milliseconds) | `60000` | Sets the timeout for explicit `memory_search` qmd queries |
 | `PI_MEMORY_NO_SEARCH` | `1` | unset | Disable selective injection in `per-turn` mode (no effect in `stable` mode) |

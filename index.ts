@@ -1396,6 +1396,9 @@ let snapshotTakenAt: string | null = null;
 let snapshotTakenOnDate: string | null = null;
 let snapshotReason: string | null = null;
 let snapshotDirty = false;
+// In `manual` mode (the default), injection is disabled until the user runs
+// `/memory on`; session-scoped, reset on session start.
+let manualInjectionEnabled = false;
 
 function refreshMemorySnapshot(reason: string) {
 	memorySnapshot = buildMemoryContext("");
@@ -1405,10 +1408,12 @@ function refreshMemorySnapshot(reason: string) {
 	snapshotDirty = false;
 }
 
-function getSnapshotMode(): "stable" | "per-turn" | "off" {
-	const mode = (process.env.PI_MEMORY_SNAPSHOT ?? "stable").toLowerCase();
+function getSnapshotMode(): "manual" | "stable" | "per-turn" | "off" {
+	const mode = (process.env.PI_MEMORY_SNAPSHOT ?? "manual").toLowerCase();
 	if (mode === "off" || mode === "disabled" || mode === "none") return "off";
-	return mode === "per-turn" ? "per-turn" : "stable";
+	if (mode === "per-turn") return "per-turn";
+	if (mode === "stable") return "stable";
+	return "manual";
 }
 
 /** Reset snapshot state (for testing). */
@@ -1418,6 +1423,7 @@ export function _resetMemorySnapshot() {
 	snapshotTakenOnDate = null;
 	snapshotReason = null;
 	snapshotDirty = false;
+	manualInjectionEnabled = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1428,6 +1434,7 @@ export default function (pi: ExtensionAPI) {
 	// --- session_start: detect qmd, auto-setup collection ---
 	pi.on("session_start", async (_event, ctx) => {
 		exitSummaryReason = null;
+		manualInjectionEnabled = false;
 		if (terminalInputUnsubscribe) {
 			terminalInputUnsubscribe();
 			terminalInputUnsubscribe = null;
@@ -1541,8 +1548,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event, _ctx) => {
 		const mode = getSnapshotMode();
 
-		if (mode === "off") {
-			// No ambient injection; tools remain available for on-demand memory_read / memory_search.
+		// `off`: no injection at all. `manual` (default): injection only after the
+		// user runs `/memory on` this session. Tools remain available either way.
+		if (mode === "off" || (mode === "manual" && !manualInjectionEnabled)) {
 			return;
 		}
 
@@ -1635,6 +1643,52 @@ export default function (pi: ExtensionAPI) {
 		} finally {
 			refreshMemorySnapshot("session_before_compact");
 		}
+	});
+
+	// --- /memory command: opt-in injection for manual mode ---
+	pi.registerCommand("memory", {
+		description: "Toggle memory snapshot injection for this session (/memory [on|off])",
+		getArgumentCompletions: (prefix: string) => {
+			const items = [
+				{ value: "on", label: "on" },
+				{ value: "off", label: "off" },
+			];
+			const filtered = items.filter((i) => i.value.startsWith(prefix));
+			return filtered.length > 0 ? filtered : null;
+		},
+		handler: async (args, ctx) => {
+			const mode = getSnapshotMode();
+			const notify = (text: string, kind: "info" | "warning") => {
+				if (ctx?.ui?.notify) ctx.ui.notify(text, kind);
+			};
+
+			if (mode === "stable" || mode === "per-turn") {
+				notify(`PI_MEMORY_SNAPSHOT=${mode} — injection is always on; /memory has no effect.`, "info");
+				return;
+			}
+			if (mode === "off") {
+				notify(
+					"PI_MEMORY_SNAPSHOT=off — injection is disabled for this session. Unset the env var to use /memory.",
+					"warning",
+				);
+				return;
+			}
+
+			const arg = (args ?? "").trim().toLowerCase();
+			const enable = arg === "on" ? true : arg === "off" ? false : !manualInjectionEnabled;
+			manualInjectionEnabled = enable;
+			if (enable) {
+				refreshMemorySnapshot("manual-inject");
+				notify("Memory injection enabled for this session (stable snapshot from here on).", "info");
+			} else {
+				memorySnapshot = null;
+				snapshotTakenAt = null;
+				snapshotTakenOnDate = null;
+				snapshotReason = null;
+				snapshotDirty = false;
+				notify("Memory injection disabled for this session.", "info");
+			}
+		},
 	});
 
 	// --- memory_write tool ---
@@ -2409,10 +2463,16 @@ export default function (pi: ExtensionAPI) {
 				lines.push("", qmdInstallInstructions());
 			}
 
+			const snapshotMode = getSnapshotMode();
+			const snapshotLine =
+				snapshotMode === "manual"
+					? `- PI_MEMORY_SNAPSHOT: manual (injection: ${manualInjectionEnabled ? "on" : "off"}${manualInjectionEnabled ? "" : " — run /memory on to enable"})`
+					: `- PI_MEMORY_SNAPSHOT: ${snapshotMode}`;
+
 			lines.push(
 				"",
 				"## Configuration",
-				`- PI_MEMORY_SNAPSHOT: ${getSnapshotMode()}`,
+				snapshotLine,
 				`- PI_MEMORY_QMD_UPDATE: ${getQmdUpdateMode()}`,
 				`- PI_MEMORY_QMD_SEARCH_TIMEOUT_MS: ${getQmdSearchTimeoutMs()}`,
 				`- PI_MEMORY_DIR: ${process.env.PI_MEMORY_DIR ? "set" : "default"}`,
@@ -2429,6 +2489,7 @@ export default function (pi: ExtensionAPI) {
 					collection: collectionOk,
 					embeddings,
 					snapshotMode: getSnapshotMode(),
+					manualInjectionEnabled,
 					qmdUpdateMode: getQmdUpdateMode(),
 				},
 			};
