@@ -137,6 +137,12 @@ To keep the prefix byte-stable, the extension snapshots the memory context at de
 
 Set `PI_MEMORY_SNAPSHOT=per-turn` to opt out and restore the old per-turn rebuild behavior, including automatic per-prompt qmd search injection.
 
+### Opt-in only mode (`off`)
+
+Set `PI_MEMORY_SNAPSHOT=off` to disable ambient injection entirely. No memory context is added to the system prompt — the model starts each session with a clean slate. All tools (`memory_read`, `memory_search`, `memory_write`, `memory_forget`, `memory_status`) remain available, so memory can be consulted or updated explicitly on demand. `memory_status` reports `PI_MEMORY_SNAPSHOT: off`.
+
+Aliases `disabled` and `none` are also accepted.
+
 ### Selective injection (opt-in via `per-turn` mode)
 
 When `PI_MEMORY_SNAPSHOT=per-turn` is set and qmd is available, the extension automatically searches memory using the user's prompt before each turn. The top 3 keyword results are injected alongside the standard context. This surfaces relevant past decisions without an explicit `memory_search` call, at the cost of busting the KV cache every turn (the search is prompt-dependent and cannot be cached).
@@ -186,7 +192,7 @@ This ensures in-progress context survives compaction and is visible in the next 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
 | `PI_MEMORY_DIR` | path | `~/.pi/agent/memory` | Override the memory storage directory |
-| `PI_MEMORY_SNAPSHOT` | `stable`, `per-turn` | `stable` | `stable` snapshots memory at checkpoints for KV cache stability; `per-turn` rebuilds every turn (legacy behavior) |
+| `PI_MEMORY_SNAPSHOT` | `stable`, `per-turn`, `off` | `stable` | `stable` snapshots memory at checkpoints for KV cache stability; `per-turn` rebuilds every turn (legacy behavior); `off` disables ambient injection entirely (tools still work on demand) |
 | `PI_MEMORY_QMD_UPDATE` | `background`, `manual`, `off` | `background` | Controls automatic `qmd update` + `qmd embed` after writes |
 | `PI_MEMORY_QMD_SEARCH_TIMEOUT_MS` | positive integer (milliseconds) | `60000` | Sets the timeout for explicit `memory_search` qmd queries |
 | `PI_MEMORY_NO_SEARCH` | `1` | unset | Disable selective injection in `per-turn` mode (no effect in `stable` mode) |

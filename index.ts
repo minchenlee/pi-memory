@@ -1405,8 +1405,9 @@ function refreshMemorySnapshot(reason: string) {
 	snapshotDirty = false;
 }
 
-function getSnapshotMode(): "stable" | "per-turn" {
+function getSnapshotMode(): "stable" | "per-turn" | "off" {
 	const mode = (process.env.PI_MEMORY_SNAPSHOT ?? "stable").toLowerCase();
+	if (mode === "off" || mode === "disabled" || mode === "none") return "off";
 	return mode === "per-turn" ? "per-turn" : "stable";
 }
 
@@ -1539,6 +1540,11 @@ export default function (pi: ExtensionAPI) {
 	// --- Inject memory context before every agent turn ---
 	pi.on("before_agent_start", async (event, _ctx) => {
 		const mode = getSnapshotMode();
+
+		if (mode === "off") {
+			// No ambient injection; tools remain available for on-demand memory_read / memory_search.
+			return;
+		}
 
 		let memoryContext: string;
 		let snapshotCaveat = "";

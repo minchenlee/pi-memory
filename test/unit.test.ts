@@ -1965,6 +1965,33 @@ describe("KV cache stability: memory snapshot", () => {
 		expect(result2.systemPrompt).not.toContain("First content");
 	});
 
+	test("PI_MEMORY_SNAPSHOT=off disables ambient injection but keeps tools working", async () => {
+		process.env.PI_MEMORY_SNAPSHOT = "off";
+		fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), "SECRET_LONG_TERM content", "utf-8");
+
+		// No injection: systemPrompt is returned untouched (or no result at all).
+		const result = await hooks.before_agent_start({ systemPrompt: "base" }, {});
+		if (result !== undefined) {
+			expect(result.systemPrompt).not.toContain("SECRET_LONG_TERM");
+			expect(result.systemPrompt).not.toContain("## Memory");
+		}
+
+		// Tools still work: memory_read returns authoritative on-disk state.
+		const read = await tools.memory_read.execute("tc-off", { target: "long_term" }, null, null, createMockCtx());
+		expect(read.content[0].text).toContain("SECRET_LONG_TERM");
+	});
+
+	test("PI_MEMORY_SNAPSHOT aliases disabled/none also map to off", async () => {
+		for (const alias of ["disabled", "none"]) {
+			process.env.PI_MEMORY_SNAPSHOT = alias;
+			fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), `ALIAS_CONTENT_${alias}`, "utf-8");
+			const result = await hooks.before_agent_start({ systemPrompt: "base" }, {});
+			if (result !== undefined) {
+				expect(result.systemPrompt).not.toContain("ALIAS_CONTENT_");
+			}
+		}
+	});
+
 	test("session_start refreshes snapshot (resets module state across sessions)", async () => {
 		fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), "session-1 content", "utf-8");
 		const result1 = await hooks.before_agent_start({ systemPrompt: "base" }, {});
